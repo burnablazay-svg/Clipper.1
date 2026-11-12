@@ -2,6 +2,11 @@
 
 Standalone clipping agent. Paste a link, get clips. No Everygen account needed.
 
+## Requirements
+- Python 3.12 (newer versions may fail to install faster-whisper)
+- ffmpeg, installed and available on your PATH
+- Optional: an Anthropic API key. Without one, the app uses a local picker.
+
 ## Setup
 1. Install ffmpeg (`brew install ffmpeg` or `apt install ffmpeg`).
 2. `pip install -r requirements.txt`
