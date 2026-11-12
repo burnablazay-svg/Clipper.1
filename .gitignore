@@ -1,0 +1,8 @@
+venv/
+jobs/
+clips/
+__pycache__/
+*.pyc
+.env
+*.mp4
+*.srt
