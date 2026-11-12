@@ -20,9 +20,15 @@ VERT_W, VERT_H = 720, 1280  # 9:16 clip size (1080x1920 for full HD)
 PICK_MODEL = os.environ.get("CLIPPER_PICK_MODEL", "tiny")
 CAP_MODEL = os.environ.get("CLIPPER_CAPTION_MODEL", "base")
 _MODELS = {}
+# Clip length in seconds. Starts at MIN_LEN and grows toward MAX_LEN while the replay
+# heatmap stays high after the peak.
+MIN_LEN, MAX_LEN = 45, 60
+# Extra seconds kept on each side of a found moment so the clip can be trimmed precisely.
+PAD = int(os.environ.get("CLIPPER_PAD", "20"))
 
 RUBRIC = """You pick short-form clips from a video transcript.
-Good clip: 15-40s (up to 60s if compiling). Setup of 2-8s so a cold viewer
+Good clip: 45-60s. Use about 45s by default and go toward 60s only when the
+heatmap stays high after the peak. Setup of 2-8s so a cold viewer
 understands, a twist or escalation around 6-10s, the peak reaction, then a hard
 cut at or just after the peak. Favor sudden shifts, big reactions, surprises,
 physical comedy, strong claims. Avoid inside jokes and slow explanations.
@@ -58,7 +64,7 @@ def load_audio(path, start=0, dur=None):
     return np.frombuffer(subprocess.run(cmd, capture_output=True, check=True).stdout, dtype=np.float32)
 
 
-def heat_windows(heat, count, pad=35):
+def heat_windows(heat, count, pad=45):
     """Time ranges around the most-replayed peaks, so we only transcribe those."""
     peaks = sorted(heat, key=lambda h: -h["value"])[:max(count * 3, 10)]
     spans = sorted((max(0, (p["start_time"] + p["end_time"]) / 2 - pad),
@@ -90,7 +96,39 @@ HYPE = ("wow", "oh my", "no way", "what", "haha", "crazy", "insane", "omg", "oh 
         "unbelievable", "scream", "can't believe", "are you serious")
 
 
-def pick_local(segments, heatmap, count, win=25):
+def heat_at(heatmap, a, b):
+    v = [h["value"] for h in heatmap if h["end_time"] > a and h["start_time"] < b]
+    return max(v) if v else 0
+
+
+def heat_mean(heatmap, a, b):
+    """Average replay intensity across a window, so windows that sit on the hot stretch win."""
+    pts = [heat_at(heatmap, t, t + 1) for t in range(int(a), int(b), 3)]
+    return sum(pts) / len(pts) if pts else 0
+
+
+def video_length(heatmap, segments):
+    ends = [h["end_time"] for h in heatmap] + [s["end"] for s in segments]
+    return max(ends) if ends else 0
+
+
+def fit_length(clip, heatmap, total):
+    """Make a clip MIN_LEN to MAX_LEN seconds, longer when viewers kept rewatching."""
+    start, end = clip["start"], clip["end"]
+    if end - start > MAX_LEN:
+        end = start + MAX_LEN
+    elif end - start < MIN_LEN:
+        end = start + MIN_LEN
+    peak = heat_at(heatmap, start, end)
+    while peak > 0 and end - start + 5 <= MAX_LEN and heat_at(heatmap, end, end + 5) >= 0.7 * peak:
+        end += 5
+    if total and end > total:
+        end = total
+        start = max(0, min(start, end - MIN_LEN))
+    return {**clip, "start": start, "end": end}
+
+
+def pick_local(segments, heatmap, count, win=MIN_LEN):
     """No API key needed: replay heatmap plus simple transcript energy signals."""
     if not segments:
         return []
@@ -108,18 +146,19 @@ def pick_local(segments, heatmap, count, win=25):
     win = min(win, max(total, 5))
     cands, t = [], 0.0
     while t + win <= total + 0.01:
-        cands.append((heat_at(t, t + win) * 10 + text_score(t, t + win), t))
+        cands.append((heat_mean(heatmap, t, t + win) * 10 + text_score(t, t + win), t))
         t += 5
     picked = []
-    for sc, t in sorted(cands, reverse=True):
-        if all(abs(t - p["start"]) >= win for p in picked):
+    for sc, t in sorted(cands, key=lambda c: (-c[0], c[1])):
+        if all(abs(t - p["start"]) >= MAX_LEN for p in picked):
             seg = [s for s in segments if s["end"] > t and s["start"] < t + win]
             first = seg[0]["text"] if seg else ""
             picked.append({"start": t, "end": t + win, "title": first[:50] or "Moment",
                            "hook": first[:80], "score": min(10, max(1, round(sc)))})
         if len(picked) >= count:
             break
-    return picked
+    vlen = video_length(heatmap, segments)
+    return [fit_length(p, heatmap, vlen) for p in picked]
 
 
 def pick_moments(segments, heatmap, title, count, focus):
@@ -138,8 +177,13 @@ def pick_moments(segments, heatmap, title, count, focus):
         messages=[{"role": "user", "content": ask}])
     text = "".join(b.text for b in msg.content if b.type == "text")
     clips = json.loads(re.search(r"\[.*\]", text, re.S).group(0))
-    clips = [c for c in clips if 5 <= c["end"] - c["start"] <= 90]
-    return sorted(clips, key=lambda c: -c["score"])[:count]
+    vlen = video_length(heatmap, segments)
+    fitted = [fit_length(c, heatmap, vlen) for c in clips if c["end"] - c["start"] >= 5]
+    out = []
+    for c in sorted(fitted, key=lambda c: -c["score"]):
+        if all(c["end"] <= o["start"] or c["start"] >= o["end"] for o in out):
+            out.append(c)
+    return out[:count]
 
 
 def ts(t):
@@ -199,6 +243,15 @@ def cut(src, clip, idx, outdir, segments, vertical, captions):
     subprocess.run(cmd + ["-c:v", "libx264", "-preset", "veryfast", "-crf", str(CRF),
                   "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out], check=True, cwd=outdir)
     return os.path.join(outdir, out)
+
+
+def duration(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "csv=p=0", path], capture_output=True, text=True)
+    try:
+        return round(float(r.stdout.strip()), 1)
+    except ValueError:
+        return 0
 
 
 def cleanup(outdir):
