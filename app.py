@@ -110,3 +110,43 @@ button{padding:8px 16px;border:1px solid var(--acc);background:var(--acc);color:
 .card{border:1px solid var(--line);border-radius:12px;padding:12px}.card video{width:100%;border-radius:8px;background:#000}
 .card h3{font-size:15px;font-weight:500;margin:8px 0 2px}.card p{font-size:13px;color:var(--mut);margin:0 0 6px}
 </style>
+<h1>Clipper</h1>
+<label for=url>Video link</label><input id=url type=text placeholder="https://youtu.be/...">
+<label for=focus>Focus (optional)</label><input id=focus type=text placeholder="The funniest reactions">
+<div class=row>
+<span><label for=count style="display:inline">Clips</label> <input id=count type=number value=6 min=1 max=16 style="width:70px"></span>
+<span><input id=vertical type=checkbox checked> <label for=vertical>9:16 vertical</label></span>
+<span><input id=captions type=checkbox checked> <label for=captions>Captions</label></span>
+<button id=go>Find clips</button></div>
+<div id=msg role=status></div><div id=grid></div>
+<script>
+const $=id=>document.getElementById(id);let timer,shown=0,jid;
+function say(t,e){$('msg').textContent=t;$('msg').className=e?'err':''}
+$('go').onclick=async()=>{
+ clearInterval(timer);$('grid').innerHTML='';shown=0;say('Starting...');
+ const r=await fetch('/start',{method:'POST',headers:{'Content-Type':'application/json','X-Token':'__TOKEN__'},body:JSON.stringify({
+  url:$('url').value,focus:$('focus').value,count:+$('count').value,vertical:$('vertical').checked,captions:$('captions').checked})});
+ const d=await r.json();if(!r.ok){say(d.error,1);return}
+ jid=d.id;timer=setInterval(poll,2000)};
+async function poll(){
+ const j=await(await fetch('/status/'+jid)).json();
+ if(j.status==='error'){clearInterval(timer);say(j.error,1);return}
+ say(j.stage);
+ for(;shown<j.clips.length;shown++){const c=j.clips[shown],u='/files/'+jid+'/'+c.file;
+  const el=document.createElement('div');el.className='card';
+  const v=document.createElement('video');v.src=u;v.controls=true;v.preload='metadata';
+  const h=document.createElement('h3');h.textContent=c.title;
+  const p=document.createElement('p');p.textContent=c.hook+' ('+Math.round(c.start)+'s to '+Math.round(c.end)+'s, score '+c.score+')';
+  const a=document.createElement('a');a.href=u;a.download=c.file;a.textContent='Download';
+  el.append(v,h,p,a);$('grid').append(el)}
+ if(j.status==='done'){clearInterval(timer);say(j.clips.length+' clips ready')}}
+</script>"""
+
+
+@app.get("/")
+def index():
+    return PAGE.replace("__TOKEN__", TOKEN)
+
+
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=5000, threaded=True)
