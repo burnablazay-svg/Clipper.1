@@ -8,10 +8,9 @@ Standalone clipping agent. Paste a link, get clips. No Everygen account needed.
 - Optional: an Anthropic API key. Without one, the app uses a local picker.
 
 ## Setup
-1. Install ffmpeg (`brew install ffmpeg` or `apt install ffmpeg`).
+1. Install ffmpeg (Windows: `winget install ffmpeg`, Mac: `brew install ffmpeg`, Linux: `apt install ffmpeg`).
 2. `pip install -r requirements.txt`
-3. `export ANTHROPIC_API_KEY=your_key`
-
+3. Optional: set your API key (Windows: `$env:ANTHROPIC_API_KEY="your_key"`, Mac and Linux: `export ANTHROPIC_API_KEY=your_key`).
 ## Use
     python clipper.py "https://youtu.be/THRBZfHK8CQ" --count 6 --vertical --captions
     python clipper.py URL --focus "the funniest reactions"
