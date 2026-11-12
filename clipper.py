@@ -12,6 +12,11 @@ import anthropic
 
 MODEL = os.environ.get("CLIPPER_MODEL", "claude-sonnet-5-5")
 
+# Storage vs quality. Lower numbers or higher CRF = smaller files.
+MAX_HEIGHT = 720          # source download height (1080 for sharper, larger files)
+CRF = 24                  # x264 quality: 18 sharp/large ... 28 small/soft
+VERT_W, VERT_H = 720, 1280  # 9:16 clip size (1080x1920 for full HD)
+
 RUBRIC = """You pick short-form clips from a video transcript.
 Good clip: 15-40s (up to 60s if compiling). Setup of 2-8s so a cold viewer
 understands, a twist or escalation around 6-10s, the peak reaction, then a hard
@@ -23,8 +28,8 @@ viewers rewatched. Clips must not overlap. Return ONLY JSON:
 
 
 def download(url, workdir):
-    opts = {"format": "bv*[ext=mp4][vcodec^=avc1][height<=1080]+ba[ext=m4a]/"
-                      "b[ext=mp4][height<=1080]/bv*[height<=1080]+ba/b",
+    h = f"[height<={MAX_HEIGHT}]"
+    opts = {"format": f"bv*[ext=mp4][vcodec^=avc1]{h}+ba[ext=m4a]/b[ext=mp4]{h}/bv*{h}+ba/b",
             "merge_output_format": "mp4",
             "outtmpl": os.path.join(workdir, "source.%(ext)s"), "quiet": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -121,18 +126,31 @@ def cut(src, clip, idx, outdir, segments, vertical, captions):
     out, srt = f"{name}.mp4", f"{name}.srt"
     vf = []
     if vertical:
-        vf.append("split[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,"
-                  "crop=1080:1920,boxblur=25[bg];[b]scale=1080:-2[fg];"
+        vf.append(f"split[a][b];[a]scale={VERT_W}:{VERT_H}:force_original_aspect_ratio=increase,"
+                  f"crop={VERT_W}:{VERT_H},boxblur=25[bg];[b]scale={VERT_W}:-2[fg];"
                   "[bg][fg]overlay=(W-w)/2:(H-h)/2")
     if captions and write_srt(segments, clip["start"], clip["end"], os.path.join(outdir, srt)):
-        style = "Fontsize=18,Bold=1,Outline=3,Alignment=2,MarginV=" + ("500" if vertical else "40")
+        # libass sizes are relative to a 288-pixel-high canvas, scaled to the video
+        style = ("Fontsize=14,Bold=1,Outline=2,Alignment=2,MarginV=70" if vertical
+                 else "Fontsize=12,Bold=1,Outline=2,Alignment=2,MarginV=12")
         vf.append(f"subtitles={srt}:force_style='{style}'")
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(clip["start"]), "-to", str(clip["end"]),
            "-i", os.path.abspath(src)]
     if vf:
         cmd += ["-vf", ",".join(vf)]
-    subprocess.run(cmd + ["-c:v", "libx264", "-crf", "20", "-c:a", "aac", out], check=True, cwd=outdir)
+    subprocess.run(cmd + ["-c:v", "libx264", "-preset", "medium", "-crf", str(CRF),
+                  "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out], check=True, cwd=outdir)
     return os.path.join(outdir, out)
+
+
+def cleanup(outdir):
+    """Delete the big source download and temporary caption files."""
+    for f in os.listdir(outdir):
+        if f.startswith("source") or f.endswith(".srt"):
+            try:
+                os.remove(os.path.join(outdir, f))
+            except OSError:
+                pass
 
 
 def main():
@@ -143,6 +161,7 @@ def main():
     p.add_argument("--vertical", action="store_true", help="9:16 with blurred background")
     p.add_argument("--captions", action="store_true", help="burn in captions")
     p.add_argument("--out", default="clips")
+    p.add_argument("--keep-source", action="store_true", help="keep the downloaded video")
     a = p.parse_args()
     os.makedirs(a.out, exist_ok=True)
     print("Downloading...")
@@ -155,6 +174,8 @@ def main():
         path = cut(src, c, i, a.out, segs, a.vertical, a.captions)
         print(f"{path}  [{c['start']:.0f}-{c['end']:.0f}s] score {c['score']}  {c['title']} | {c['hook']}")
     json.dump(clips, open(os.path.join(a.out, "clips.json"), "w"), indent=2)
+    if not a.keep_source:
+        cleanup(a.out)
 
 
 if __name__ == "__main__":
