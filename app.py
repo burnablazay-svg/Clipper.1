@@ -47,8 +47,9 @@ def run(job_id, url, count, focus, vertical, captions):
         os.makedirs(out, exist_ok=True)
         job["stage"] = "Downloading the video"
         src, heat, title = clipper.download(url, out)
-        job["stage"] = "Transcribing" + ("" if heat else " (no replay heatmap for this video)")
-        segs = clipper.transcribe(src)
+        job["stage"] = ("Listening to the most-replayed sections" if heat
+                        else "Transcribing the whole video (no replay heatmap, this is slower)")
+        segs = clipper.transcribe(src, heat, count)
         job["stage"] = "Picking the best moments"
         clips = clipper.pick_moments(segs, heat, title, count, focus)
         for i, c in enumerate(clips, 1):
