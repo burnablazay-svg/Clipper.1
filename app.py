@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Local web UI for clipper.py. Run: python app.py, then open http://127.0.0.1:5000"""
-import json, os, re, secrets, shutil, threading, time, uuid
+import json, os, re, secrets, shutil, subprocess, threading, time, uuid
 from urllib.parse import urlparse
 from flask import Flask, jsonify, request, send_from_directory
 import clipper
@@ -37,7 +37,7 @@ def headers(r):
     r.headers["X-Frame-Options"] = "DENY"
     r.headers["Referrer-Policy"] = "no-referrer"
     r.headers["Content-Security-Policy"] = ("default-src 'self'; script-src 'unsafe-inline'; "
-                                            "style-src 'unsafe-inline'; media-src 'self'")
+                                            "style-src 'unsafe-inline'; media-src 'self'; img-src 'self' data:")
     return r
 
 
@@ -52,12 +52,18 @@ def run(job_id, url, count, focus, vertical, captions):
         segs = clipper.transcribe(src, heat, count)
         job["stage"] = "Picking the best moments"
         clips = clipper.pick_moments(segs, heat, title, count, focus)
+        vlen = clipper.video_length(heat, segs)
         for i, c in enumerate(clips, 1):
             job["stage"] = f"Cutting clip {i} of {len(clips)}"
-            path = clipper.cut(src, c, i, out, segs, vertical, captions)
+            ps = max(0, c["start"] - clipper.PAD)
+            pe = min(c["end"] + clipper.PAD, vlen) if vlen else c["end"] + clipper.PAD
+            path = clipper.cut(src, {"start": ps, "end": pe}, i, out, segs, vertical, captions)
+            dur = clipper.duration(path)
             job["clips"].append({"file": os.path.basename(path), "title": c["title"],
                                  "hook": c["hook"], "score": c["score"],
-                                 "start": c["start"], "end": c["end"]})
+                                 "start": c["start"], "end": c["end"], "dur": dur,
+                                 "in": round(c["start"] - ps, 1),
+                                 "out": round(min(c["end"] - ps, dur), 1)})
         json.dump(job["clips"], open(os.path.join(out, "clips.json"), "w"))
         job["status"], job["stage"] = "done", "Done"
     except Exception as e:
@@ -121,6 +127,30 @@ def jobs():
     return jsonify(sorted(out, key=lambda j: -j["t"])[:8])
 
 
+@app.post("/trim/<job_id>")
+def trim(job_id):
+    d = request.get_json(force=True)
+    f = str(d.get("file", ""))
+    if not re.fullmatch(r"[0-9a-f]{10}", job_id) or not re.fullmatch(r"clip\d{2}\.mp4", f):
+        return jsonify(error="Bad request"), 400
+    src = os.path.join(ROOT, job_id, f)
+    try:
+        a, b = float(d["start"]), float(d["end"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify(error="Bad times"), 400
+    if not os.path.exists(src) or a < 0 or b - a < 1:
+        return jsonify(error="Bad range"), 400
+    out = f.replace(".mp4", "_trim.mp4")
+    try:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", str(a), "-to", str(b), "-i", src,
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(max(16, clipper.CRF - 3)),
+                        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", out],
+                       check=True, cwd=os.path.join(ROOT, job_id))
+    except subprocess.CalledProcessError:
+        return jsonify(error="Could not trim this clip"), 500
+    return jsonify(file=out)
+
+
 @app.post("/delete/<job_id>")
 def delete(job_id):
     if not re.fullmatch(r"[0-9a-f]{10}", job_id) or JOBS.get(job_id, {}).get("status") == "running":
@@ -140,6 +170,7 @@ def open_folder(job_id):
 
 PAGE = r"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Clipper</title>
+<link rel=icon href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f2501a'/%3E%3Cpath d='M24 22v20l17-10z' fill='white'/%3E%3C/svg%3E">
 <style>
 :root{--peri:#8b8dff;--coral:#f2645e;--org:#f29a5f;--navy:#2a3f8f;--glass:rgba(12,14,46,.62);--line:rgba(255,255,255,.16)}
 *{box-sizing:border-box}
@@ -157,7 +188,7 @@ filter:blur(34px);opacity:.75;border-radius:42% 58% 63% 37%/45% 40% 60% 55%;anim
 .st span{writing-mode:vertical-rl;transform:rotate(180deg);font:12px "Arial Narrow",sans-serif;letter-spacing:3px;text-transform:uppercase}
 .st:after{content:"";width:22px;height:2px;background:var(--org)}
 .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-.logo{letter-spacing:6px;font-size:13px;text-transform:uppercase}
+.logo{letter-spacing:6px;font-size:13px;text-transform:uppercase;display:flex;align-items:center;gap:12px}
 .chip{font-size:12px;padding:4px 12px;border:1px solid var(--line);border-radius:99px;background:var(--glass)}.chip.low{border-color:var(--coral);color:#ffb3ad}
 h1{margin:6px 0 4px;font:400 clamp(64px,11vw,132px)/.9 "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,"Arial Narrow",sans-serif;letter-spacing:4px;text-transform:uppercase}
 h1 span{color:var(--peri)}
@@ -182,14 +213,29 @@ input:focus{outline:2px solid var(--peri)}
 h2{font:400 28px "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,sans-serif;letter-spacing:3px;margin:30px 0 10px}
 .hist{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line);flex-wrap:wrap}
 @media(max-width:760px){.shell{grid-template-columns:1fr}.rail{flex-direction:row;justify-content:space-around;padding:12px;position:static}.st span{writing-mode:horizontal-tb;transform:none}.st:after{display:none}}
+#ed{position:fixed;inset:0;background:rgba(6,8,30,.82);z-index:10;display:flex;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(6px)}
+#ed[hidden]{display:none}
+.edbox{width:min(900px,100%);max-height:100%;overflow:auto;background:#12142e;border:1px solid var(--line);border-radius:8px;padding:16px}
+.edtop{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.edtop .btn{margin-left:8px}.edtitle{font:400 24px "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,sans-serif;letter-spacing:2px}
+#edv{width:100%;max-height:48vh;background:#000;border-radius:6px;display:block}
+.tl{margin:18px 6px 6px}.trk{position:relative;height:54px;background:rgba(255,255,255,.1);border-radius:6px}
+.trk input{position:absolute;inset:0;width:100%;height:100%;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
+.trk input::-webkit-slider-runnable-track{background:none}.trk input::-moz-range-track{background:none}
+.trk input::-webkit-slider-thumb{pointer-events:auto;-webkit-appearance:none;width:14px;height:54px;border-radius:4px;background:var(--org);border:2px solid #fff;box-sizing:border-box;cursor:ew-resize}
+.trk input::-moz-range-thumb{pointer-events:auto;width:14px;height:54px;border-radius:4px;background:var(--org);border:2px solid #fff;box-sizing:border-box;cursor:ew-resize}
+#sel{position:absolute;top:0;bottom:0;background:rgba(242,100,94,.35);border-top:3px solid var(--coral);border-bottom:3px solid var(--coral);pointer-events:none}
+#ph{position:absolute;top:-6px;bottom:-6px;width:2px;background:#fff;pointer-events:none;z-index:3}
+.tlr{display:flex;justify-content:space-between;margin-top:8px;font-size:13px;color:rgba(255,255,255,.85)}
+.edbtn{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}#edmsg{min-height:20px;margin:10px 0 0;font-size:13px;color:var(--org)}
 </style>
 <div class=blob></div>
 <div class=shell>
 <nav class=rail aria-label="Progress"><div class=st id=s1><b>01</b><span>Download</span></div><div class=st id=s2><b>02</b><span>Listen</span></div><div class=st id=s3><b>03</b><span>Pick</span></div><div class=st id=s4><b>04</b><span>Cut</span></div></nav>
 <main>
-<div class=top><div class=logo>Clipper</div><div class=chip id=disk>checking disk...</div></div>
+<div class=top><div class=logo><svg width=38 height=38 viewBox="0 0 64 64" aria-hidden=true><defs><linearGradient id=lg x1=0 y1=0 x2=1 y2=1><stop offset=0 stop-color="#e8931c"/><stop offset=1 stop-color="#f23a0d"/></linearGradient></defs><rect width=64 height=64 rx=14 fill="url(#lg)"/><path d="M19 7v34a5 5 0 0 0 5 5h33M7 19h34a5 5 0 0 1 5 5v33" fill=none stroke=#fff stroke-width=5 stroke-linecap=round /><path d="M26 25v14l12-7z" fill=#fff stroke=#fff stroke-width=3 stroke-linejoin=round /></svg>Clipper</div><div class=chip id=disk>checking disk...</div></div>
 <h1><span>Clip</span><br>Finder</h1>
-<p class=lead>Paste a video link. Clipper finds the most replayed moments and cuts them into 45 to 60 second clips.</p>
+<p class=lead>Paste a video link. Clipper finds the most replayed moments and cuts them into 45 to 60 second clips, with about __PAD__ extra seconds on each side. Press Trim on a clip to set the exact start and end.</p>
 <div class=panel>
 <label for=url>Video link</label><input id=url type=text placeholder="https://youtu.be/..." autocomplete=off>
 <label for=focus>Focus (optional, needs an API key)</label><input id=focus type=text placeholder="The funniest reactions">
@@ -203,6 +249,13 @@ h2{font:400 28px "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,sans-serif;l
 <div id=grid></div>
 <h2>Recent jobs</h2><div id=hist class=panel>No earlier jobs yet.</div>
 </main></div>
+<div id=ed hidden role=dialog aria-modal=true aria-label="Trim clip"><div class=edbox>
+<div class=edtop><div class=edtitle id=edt></div><div><button class=btn id=edx>Export trimmed clip</button><button class="btn alt" id=edc>Close</button></div></div>
+<video id=edv controls playsinline></video>
+<div class=tl><div class=trk><div id=sel></div><div id=ph></div><input type=range id=rs min=0 step=0.1 aria-label="Start"><input type=range id=re min=0 step=0.1 aria-label="End"></div>
+<div class=tlr><span id=tin></span><span id=tlen></span><span id=tout></span></div></div>
+<div class=edbtn><button class="btn alt sm" id=pl>Play selection</button><button class="btn alt sm" id=hs>Set start here</button><button class="btn alt sm" id=he>Set end here</button></div>
+<p id=edmsg role=status></p></div></div>
 <script>
 const $=id=>document.getElementById(id),H={'Content-Type':'application/json','X-Token':'__TOKEN__'};
 let timer,shown=0,jid,t0;
@@ -217,7 +270,8 @@ function card(c,id){const u='/files/'+id+'/'+c.file,el=document.createElement('d
 const v=document.createElement('video');v.src=u;v.controls=true;v.preload='metadata';
 const h=document.createElement('h3');h.textContent=c.title;
 const p=document.createElement('p');p.textContent=c.hook+(c.end?' ('+Math.round(c.end-c.start)+'s, score '+c.score+')':'');
-const a=document.createElement('a');a.href=u;a.download=c.file;a.textContent='Download';el.append(v,h,p,a);$('grid').append(el)}
+const a=document.createElement('a');a.href=u;a.download=c.file;a.textContent='Download full';el.append(v,h,p);
+if(c.dur){const t=document.createElement('button');t.className='btn sm';t.textContent='Trim';t.style.marginRight='12px';t.onclick=()=>ed(c,id);el.append(t)}el.append(a);$('grid').append(el)}
 async function go(){
  const url=$('url').value.trim();if(!url){$('err').textContent='Paste a video link first';return}
  ['focus','count'].forEach(k=>store('c_'+k,$(k).value));['vertical','captions'].forEach(k=>store('c_'+k,$(k).checked?'1':'0'));
@@ -243,6 +297,28 @@ async function hist(){
   ['Delete',async()=>{if(confirm('Delete these clips from your disk?')){await fetch('/delete/'+j.id,{method:'POST',headers:H});hist();disk()}},'']].forEach(([n,f,k])=>{
   const x=document.createElement('button');x.className='btn sm '+k;x.textContent=n;x.style.marginLeft='6px';x.onclick=f;b.append(x)});
  r.append(b);$('hist').append(r)})}
+let E={},sw=false;
+const fm=t=>Math.floor(t/60)+':'+(t%60).toFixed(1).padStart(4,'0');
+const px=v=>7+v/E.dur*($('rs').parentNode.clientWidth-14);
+function ed(c,id){E={f:c.file,id,dur:c.dur};$('ed').hidden=false;$('edt').textContent=c.title;$('edmsg').textContent='';
+ $('rs').max=$('re').max=c.dur;$('rs').value=c.in;$('re').value=c.out;$('edv').src='/files/'+id+'/'+c.file;upd();$('edv').currentTime=c.in;$('edc').focus()}
+function upd(){const a=+$('rs').value,b=+$('re').value;$('sel').style.left=px(a)+'px';$('sel').style.width=(px(b)-px(a))+'px';
+ $('tin').textContent='Start '+fm(a);$('tout').textContent='End '+fm(b);$('tlen').textContent='Length '+(b-a).toFixed(1)+'s'}
+function setA(a){const b=+$('re').value;$('rs').value=Math.max(0,Math.min(a,b-1));upd()}
+function setB(b){const a=+$('rs').value;$('re').value=Math.min(E.dur,Math.max(b,a+1));upd()}
+$('rs').oninput=()=>{setA(+$('rs').value);$('edv').currentTime=+$('rs').value};
+$('re').oninput=()=>{setB(+$('re').value);$('edv').currentTime=+$('re').value};
+$('hs').onclick=()=>setA($('edv').currentTime);$('he').onclick=()=>setB($('edv').currentTime);
+$('pl').onclick=()=>{$('edv').currentTime=+$('rs').value;sw=true;$('edv').play()};
+$('edv').ontimeupdate=()=>{const v=$('edv');$('ph').style.left=px(v.currentTime)+'px';if(sw&&v.currentTime>=+$('re').value){v.pause();sw=false}};
+$('edv').onpause=()=>{sw=false};
+function closeEd(){$('edv').pause();$('ed').hidden=true;$('edv').removeAttribute('src')}
+$('edc').onclick=closeEd;document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('ed').hidden)closeEd()});
+$('edx').onclick=async()=>{$('edx').disabled=true;$('edmsg').textContent='Exporting...';
+ const r=await fetch('/trim/'+E.id,{method:'POST',headers:H,body:JSON.stringify({file:E.f,start:+$('rs').value,end:+$('re').value})});
+ const d=await r.json();$('edx').disabled=false;if(!r.ok){$('edmsg').textContent=d.error;return}
+ const a=document.createElement('a');a.href='/files/'+E.id+'/'+d.file+'?t='+Date.now();a.download=d.file;document.body.append(a);a.click();a.remove();
+ $('edmsg').textContent='Saved as '+d.file+' in your jobs folder, and downloading now.';$('edv').src=a.href;};
 $('go').onclick=go;$('url').addEventListener('keydown',e=>{if(e.key==='Enter')go()});
 disk();hist();
 </script>"""
@@ -250,7 +326,7 @@ disk();hist();
 
 @app.get("/")
 def index():
-    return PAGE.replace("__TOKEN__", TOKEN)
+    return PAGE.replace("__TOKEN__", TOKEN).replace("__PAD__", str(clipper.PAD))
 
 
 if __name__ == "__main__":
