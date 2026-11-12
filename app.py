@@ -51,7 +51,7 @@ def run(job_id, url, count, focus, vertical, captions):
                         else "Transcribing the whole video (no replay heatmap, this is slower)")
         segs = clipper.transcribe(src, heat, count)
         job["stage"] = "Picking the best moments"
-        clips = clipper.pick_moments(segs, heat, title, count, focus)
+        clips = clipper.pick_moments(segs, heat, title, count, focus, src)
         vlen = clipper.video_length(heat, segs)
         for i, c in enumerate(clips, 1):
             job["stage"] = f"Cutting clip {i} of {len(clips)}"
@@ -62,6 +62,7 @@ def run(job_id, url, count, focus, vertical, captions):
             job["clips"].append({"file": os.path.basename(path), "title": c["title"],
                                  "hook": c["hook"], "score": c["score"],
                                  "start": c["start"], "end": c["end"], "dur": dur,
+                                 "mb": round(os.path.getsize(path) / 1e6, 1),
                                  "in": round(c["start"] - ps, 1),
                                  "out": round(min(c["end"] - ps, dur), 1)})
         json.dump(job["clips"], open(os.path.join(out, "clips.json"), "w"))
@@ -120,10 +121,13 @@ def jobs():
             clips = json.load(open(os.path.join(p, "clips.json")))
         except Exception:
             clips = [{"file": f, "title": f, "hook": "", "score": 0, "start": 0, "end": 0}
-                     for f in sorted(os.listdir(p)) if f.endswith(".mp4")]
+                     for f in sorted(os.listdir(p)) if f.endswith(".mp4") and "_trim" not in f]
+        size = {f: os.path.getsize(os.path.join(p, f)) for f in os.listdir(p)}
+        for cl in clips:
+            cl["mb"] = round(size.get(cl["file"], 0) / 1e6, 1)
         if clips:
             out.append({"id": d, "when": time.strftime("%d %b %H:%M", time.localtime(os.path.getmtime(p))),
-                        "t": os.path.getmtime(p), "clips": clips})
+                        "t": os.path.getmtime(p), "clips": clips, "mb": round(sum(size.values()) / 1e6, 1)})
     return jsonify(sorted(out, key=lambda j: -j["t"])[:8])
 
 
@@ -192,7 +196,7 @@ filter:blur(34px);opacity:.75;border-radius:42% 58% 63% 37%/45% 40% 60% 55%;anim
 .chip{font-size:12px;padding:4px 12px;border:1px solid var(--line);border-radius:99px;background:var(--glass)}.chip.low{border-color:var(--coral);color:#ffb3ad}
 h1{margin:6px 0 4px;font:400 clamp(64px,11vw,132px)/.9 "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,"Arial Narrow",sans-serif;letter-spacing:4px;text-transform:uppercase}
 h1 span{color:var(--peri)}
-.lead{max-width:520px;color:rgba(255,255,255,.82);margin:0 0 20px}
+.how{max-width:560px;margin:4px 0 20px}.how summary{cursor:pointer;display:inline-block;padding:8px 16px;border:1px solid var(--line);border-radius:99px;background:var(--glass);letter-spacing:1px;font-size:13px;text-transform:uppercase}.how ol{margin:10px 0 0;padding:14px 14px 14px 34px;background:var(--glass);border:1px solid var(--line);border-radius:6px;color:rgba(255,255,255,.88)}.sug{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.sug button{font:inherit;font-size:12px;padding:4px 12px;border-radius:99px;border:1px solid var(--line);background:rgba(255,255,255,.08);color:#fff;cursor:pointer}.sug button:hover{border-color:var(--org)}
 .panel{background:var(--glass);border:1px solid var(--line);border-radius:6px;padding:20px;backdrop-filter:blur(8px)}
 label{display:block;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,.7);margin:12px 0 5px}
 input[type=text],input[type=number]{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:4px;background:rgba(255,255,255,.08);color:#fff;font:inherit}
@@ -206,28 +210,23 @@ input:focus{outline:2px solid var(--peri)}
 .num i{font-style:normal;color:transparent;-webkit-text-stroke:1px rgba(255,255,255,.6)}.num i.on{color:#fff;-webkit-text-stroke:0}
 .bar{height:4px;background:rgba(255,255,255,.2);border-radius:2px;overflow:hidden}.bar div{height:100%;width:0;background:linear-gradient(90deg,var(--org),var(--coral));transition:width .6s}
 #msg{margin:8px 0 18px;color:rgba(255,255,255,.85)}
-#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
 .card{background:var(--glass);border:1px solid var(--line);border-radius:6px;padding:10px}.card video{width:100%;border-radius:4px;background:#000}
 .card h3{font:400 20px "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,sans-serif;letter-spacing:1px;margin:8px 0 2px}.card p{font-size:13px;color:rgba(255,255,255,.7);margin:0 0 8px}
 .card a{color:var(--org);font-size:13px;letter-spacing:1px;text-transform:uppercase;text-decoration:none}
 h2{font:400 28px "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,sans-serif;letter-spacing:3px;margin:30px 0 10px}
 .hist{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line);flex-wrap:wrap}
 @media(max-width:760px){.shell{grid-template-columns:1fr}.rail{flex-direction:row;justify-content:space-around;padding:12px;position:static}.st span{writing-mode:horizontal-tb;transform:none}.st:after{display:none}}
-#ed{position:fixed;inset:0;background:rgba(6,8,30,.82);z-index:10;display:flex;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(6px)}
-#ed[hidden]{display:none}
-.edbox{width:min(900px,100%);max-height:100%;overflow:auto;background:#12142e;border:1px solid var(--line);border-radius:8px;padding:16px}
-.edtop{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
-.edtop .btn{margin-left:8px}.edtitle{font:400 24px "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,sans-serif;letter-spacing:2px}
-#edv{width:100%;max-height:48vh;background:#000;border-radius:6px;display:block}
-.tl{margin:18px 6px 6px}.trk{position:relative;height:54px;background:rgba(255,255,255,.1);border-radius:6px}
+.trimbtn{margin-right:12px}.trim{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}.trim[hidden]{display:none}
+.trk{position:relative;height:40px;background:rgba(255,255,255,.1);border-radius:6px}
 .trk input{position:absolute;inset:0;width:100%;height:100%;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
 .trk input::-webkit-slider-runnable-track{background:none}.trk input::-moz-range-track{background:none}
-.trk input::-webkit-slider-thumb{pointer-events:auto;-webkit-appearance:none;width:14px;height:54px;border-radius:4px;background:var(--org);border:2px solid #fff;box-sizing:border-box;cursor:ew-resize}
-.trk input::-moz-range-thumb{pointer-events:auto;width:14px;height:54px;border-radius:4px;background:var(--org);border:2px solid #fff;box-sizing:border-box;cursor:ew-resize}
-#sel{position:absolute;top:0;bottom:0;background:rgba(242,100,94,.35);border-top:3px solid var(--coral);border-bottom:3px solid var(--coral);pointer-events:none}
-#ph{position:absolute;top:-6px;bottom:-6px;width:2px;background:#fff;pointer-events:none;z-index:3}
-.tlr{display:flex;justify-content:space-between;margin-top:8px;font-size:13px;color:rgba(255,255,255,.85)}
-.edbtn{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}#edmsg{min-height:20px;margin:10px 0 0;font-size:13px;color:var(--org)}
+.trk input::-webkit-slider-thumb{pointer-events:auto;-webkit-appearance:none;width:14px;height:40px;border-radius:4px;background:var(--org);border:2px solid #fff;box-sizing:border-box;cursor:ew-resize}
+.trk input::-moz-range-thumb{pointer-events:auto;width:14px;height:40px;border-radius:4px;background:var(--org);border:2px solid #fff;box-sizing:border-box;cursor:ew-resize}
+.sel{position:absolute;top:0;bottom:0;background:rgba(242,100,94,.35);border-top:3px solid var(--coral);border-bottom:3px solid var(--coral);pointer-events:none}
+.ph{position:absolute;top:-5px;bottom:-5px;width:2px;background:#fff;pointer-events:none;z-index:3}
+.tlr{display:flex;justify-content:space-between;margin-top:6px;font-size:12px;color:rgba(255,255,255,.85)}
+.edbtn{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.edmsg{min-height:18px;margin:8px 0 0;font-size:12px;color:var(--org)}
 </style>
 <div class=blob></div>
 <div class=shell>
@@ -235,10 +234,14 @@ h2{font:400 28px "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,sans-serif;l
 <main>
 <div class=top><div class=logo><svg width=38 height=38 viewBox="0 0 64 64" aria-hidden=true><defs><linearGradient id=lg x1=0 y1=0 x2=1 y2=1><stop offset=0 stop-color="#e8931c"/><stop offset=1 stop-color="#f23a0d"/></linearGradient></defs><rect width=64 height=64 rx=14 fill="url(#lg)"/><path d="M19 7v34a5 5 0 0 0 5 5h33M7 19h34a5 5 0 0 1 5 5v33" fill=none stroke=#fff stroke-width=5 stroke-linecap=round /><path d="M26 25v14l12-7z" fill=#fff stroke=#fff stroke-width=3 stroke-linejoin=round /></svg>Clipper</div><div class=chip id=disk>checking disk...</div></div>
 <h1><span>Clip</span><br>Finder</h1>
-<p class=lead>Paste a video link. Clipper finds the most replayed moments and cuts them into 45 to 60 second clips, with about __PAD__ extra seconds on each side. Press Trim on a clip to set the exact start and end.</p>
+<details class=how><summary>How does it work?</summary><ol>
+<li>Paste a video link and press Find clips.</li>
+<li>Clipper downloads it and looks for the most replayed moments. Pick a focus to look for something else.</li>
+<li>Each moment is cut into a 45 to 60 second clip with about __PAD__ extra seconds on each side.</li>
+<li>Open Trim length under any clip to set the exact start and end, then export it.</li></ol></details>
 <div class=panel>
 <label for=url>Video link</label><input id=url type=text placeholder="https://youtu.be/..." autocomplete=off>
-<label for=focus>Focus (optional, needs an API key)</label><input id=focus type=text placeholder="The funniest reactions">
+<label for=focus>Focus (optional)</label><input id=focus type=text placeholder="Loudest moments" autocomplete=off><div class=sug id=sug></div>
 <div class=row>
 <span><label for=count style="margin:0 6px 0 0">Clips</label><input id=count type=number value=6 min=1 max=16 style="width:76px;display:inline-block"></span>
 <span><input id=vertical type=checkbox checked><label for=vertical>9:16 vertical</label></span>
@@ -247,15 +250,8 @@ h2{font:400 28px "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,sans-serif;l
 <p class=err id=err role=alert></p></div>
 <div id=prog hidden><div class=num><i id=n1>01</i><i id=n2>02</i><i id=n3>03</i><i id=n4>04</i></div><div class=bar><div id=fill></div></div><div id=msg role=status></div></div>
 <div id=grid></div>
-<h2>Recent jobs</h2><div id=hist class=panel>No earlier jobs yet.</div>
+<h2>Recent jobs <small id=tot style="font-size:15px;letter-spacing:1px;color:rgba(255,255,255,.7)"></small></h2><div id=hist class=panel>No earlier jobs yet.</div>
 </main></div>
-<div id=ed hidden role=dialog aria-modal=true aria-label="Trim clip"><div class=edbox>
-<div class=edtop><div class=edtitle id=edt></div><div><button class=btn id=edx>Export trimmed clip</button><button class="btn alt" id=edc>Close</button></div></div>
-<video id=edv controls playsinline></video>
-<div class=tl><div class=trk><div id=sel></div><div id=ph></div><input type=range id=rs min=0 step=0.1 aria-label="Start"><input type=range id=re min=0 step=0.1 aria-label="End"></div>
-<div class=tlr><span id=tin></span><span id=tlen></span><span id=tout></span></div></div>
-<div class=edbtn><button class="btn alt sm" id=pl>Play selection</button><button class="btn alt sm" id=hs>Set start here</button><button class="btn alt sm" id=he>Set end here</button></div>
-<p id=edmsg role=status></p></div></div>
 <script>
 const $=id=>document.getElementById(id),H={'Content-Type':'application/json','X-Token':'__TOKEN__'};
 let timer,shown=0,jid,t0;
@@ -266,12 +262,37 @@ async function disk(){try{const d=await(await fetch('/disk')).json();$('disk').t
 $('disk').className='chip'+(d.free_gb<3?' low':'');if(d.free_gb<3)$('disk').textContent='Low disk space: '+d.free_gb+' GB free'}catch(e){$('disk').textContent=''}}
 function step(n,frac){for(let i=1;i<=4;i++){$('s'+i).className='st'+(i===n?' on':i<n?' done':'');$('n'+i).className=i<=n?'on':''}
 $('fill').style.width=Math.round(((n-1)+(frac||0))/4*100)+'%'}
+const fm=t=>Math.floor(t/60)+':'+(t%60).toFixed(1).padStart(4,'0');
+function trimUI(c,id,v){
+ const tp=document.createElement('div');tp.className='trim';tp.hidden=true;
+ tp.innerHTML='<div class=trk><div class=sel></div><div class=ph></div><input type=range class=rs min=0 step=0.1 aria-label="Start"><input type=range class=re min=0 step=0.1 aria-label="End"></div><div class=tlr><span class=tin></span><span class=tlen></span><span class=tout></span></div><div class=edbtn><button class="btn alt sm pl">Play selection</button><button class="btn alt sm hs">Start here</button><button class="btn alt sm he">End here</button><button class="btn sm ex">Export</button></div><p class=edmsg role=status></p>';
+ const q=s=>tp.querySelector(s),rs=q('.rs'),re=q('.re');let sw=false;
+ rs.max=re.max=c.dur;rs.value=c.in;re.value=c.out;
+ const px=x=>7+x/c.dur*(q('.trk').clientWidth-14);
+ const upd=tp.upd=()=>{const a=+rs.value,b=+re.value;q('.sel').style.left=px(a)+'px';q('.sel').style.width=(px(b)-px(a))+'px';
+  q('.tin').textContent='Start '+fm(a);q('.tout').textContent='End '+fm(b);q('.tlen').textContent='Length '+(b-a).toFixed(1)+'s'};
+ const setA=a=>{rs.value=Math.max(0,Math.min(a,+re.value-1));upd()},setB=b=>{re.value=Math.min(c.dur,Math.max(b,+rs.value+1));upd()};
+ rs.oninput=()=>{setA(+rs.value);v.currentTime=+rs.value};re.oninput=()=>{setB(+re.value);v.currentTime=+re.value};
+ q('.hs').onclick=()=>setA(v.currentTime);q('.he').onclick=()=>setB(v.currentTime);
+ q('.pl').onclick=()=>{v.currentTime=+rs.value;sw=true;v.play()};
+ v.addEventListener('timeupdate',()=>{q('.ph').style.left=px(v.currentTime)+'px';if(sw&&v.currentTime>=+re.value){v.pause();sw=false}});
+ v.addEventListener('pause',()=>{sw=false});
+ q('.ex').onclick=async()=>{const x=q('.ex');x.disabled=true;q('.edmsg').textContent='Exporting...';
+  const r=await fetch('/trim/'+id,{method:'POST',headers:H,body:JSON.stringify({file:c.file,start:+rs.value,end:+re.value})});
+  const d=await r.json();x.disabled=false;if(!r.ok){q('.edmsg').textContent=d.error;return}
+  const a=document.createElement('a');a.href='/files/'+id+'/'+d.file+'?t='+Date.now();a.download=d.file;document.body.append(a);a.click();a.remove();
+  q('.edmsg').textContent='Saved as '+d.file+' and downloading now.'};
+ window.addEventListener('resize',()=>{if(!tp.hidden)upd()});
+ v.addEventListener('loadedmetadata',()=>{v.currentTime=c.in},{once:true});
+ return tp}
 function card(c,id){const u='/files/'+id+'/'+c.file,el=document.createElement('div');el.className='card';
 const v=document.createElement('video');v.src=u;v.controls=true;v.preload='metadata';
 const h=document.createElement('h3');h.textContent=c.title;
-const p=document.createElement('p');p.textContent=c.hook+(c.end?' ('+Math.round(c.end-c.start)+'s, score '+c.score+')':'');
+const p=document.createElement('p');p.textContent=c.hook+(c.end?' ('+Math.round(c.end-c.start)+'s, score '+c.score+')':'')+(c.mb?'  |  '+c.mb+' MB':'');
 const a=document.createElement('a');a.href=u;a.download=c.file;a.textContent='Download full';el.append(v,h,p);
-if(c.dur){const t=document.createElement('button');t.className='btn sm';t.textContent='Trim';t.style.marginRight='12px';t.onclick=()=>ed(c,id);el.append(t)}el.append(a);$('grid').append(el)}
+if(c.dur){const t=document.createElement('button');t.className='btn sm alt trimbtn';t.textContent='Trim length \u25BE';el.append(t);const tp=trimUI(c,id,v);el.append(tp);
+t.onclick=()=>{tp.hidden=!tp.hidden;t.textContent='Trim length '+(tp.hidden?'\u25BE':'\u25B4');if(!tp.hidden)tp.upd()}}
+el.append(a);$('grid').append(el)}
 async function go(){
  const url=$('url').value.trim();if(!url){$('err').textContent='Paste a video link first';return}
  ['focus','count'].forEach(k=>store('c_'+k,$(k).value));['vertical','captions'].forEach(k=>store('c_'+k,$(k).checked?'1':'0'));
@@ -288,37 +309,19 @@ async function poll(){
  for(;shown<j.clips.length;shown++)card(j.clips[shown],jid);
  if(j.status==='done'){clearInterval(timer);step(5);$('fill').style.width='100%';$('msg').textContent=j.clips.length+' clips ready in '+m+':'+String(s).padStart(2,'0');$('go').disabled=false;disk();hist()}}
 async function hist(){
- const L=await(await fetch('/jobs')).json();if(!L.length){$('hist').textContent='No earlier jobs yet.';return}
+ const L=await(await fetch('/jobs')).json();if(!L.length){$('hist').textContent='No earlier jobs yet.';$('tot').textContent='';return}
+ $('tot').textContent='Total '+L.reduce((s,j)=>s+j.mb,0).toFixed(1)+' MB';
  $('hist').innerHTML='';L.forEach(j=>{const r=document.createElement('div');r.className='hist';
- const t=document.createElement('span');t.textContent=j.when+'  -  '+j.clips.length+' clips';r.append(t);
+ const t=document.createElement('span');t.textContent=j.when+'  -  '+j.clips.length+' clips  -  '+j.mb+' MB';r.append(t);
  const b=document.createElement('span');
  [['View',()=>{$('grid').innerHTML='';j.clips.forEach(c=>card(c,j.id));$('grid').scrollIntoView({behavior:'smooth'})},'alt'],
   ['Open folder',()=>fetch('/open/'+j.id,{method:'POST',headers:H}),'alt'],
   ['Delete',async()=>{if(confirm('Delete these clips from your disk?')){await fetch('/delete/'+j.id,{method:'POST',headers:H});hist();disk()}},'']].forEach(([n,f,k])=>{
   const x=document.createElement('button');x.className='btn sm '+k;x.textContent=n;x.style.marginLeft='6px';x.onclick=f;b.append(x)});
  r.append(b);$('hist').append(r)})}
-let E={},sw=false;
-const fm=t=>Math.floor(t/60)+':'+(t%60).toFixed(1).padStart(4,'0');
-const px=v=>7+v/E.dur*($('rs').parentNode.clientWidth-14);
-function ed(c,id){E={f:c.file,id,dur:c.dur};$('ed').hidden=false;$('edt').textContent=c.title;$('edmsg').textContent='';
- $('rs').max=$('re').max=c.dur;$('rs').value=c.in;$('re').value=c.out;$('edv').src='/files/'+id+'/'+c.file;upd();$('edv').currentTime=c.in;$('edc').focus()}
-function upd(){const a=+$('rs').value,b=+$('re').value;$('sel').style.left=px(a)+'px';$('sel').style.width=(px(b)-px(a))+'px';
- $('tin').textContent='Start '+fm(a);$('tout').textContent='End '+fm(b);$('tlen').textContent='Length '+(b-a).toFixed(1)+'s'}
-function setA(a){const b=+$('re').value;$('rs').value=Math.max(0,Math.min(a,b-1));upd()}
-function setB(b){const a=+$('rs').value;$('re').value=Math.min(E.dur,Math.max(b,a+1));upd()}
-$('rs').oninput=()=>{setA(+$('rs').value);$('edv').currentTime=+$('rs').value};
-$('re').oninput=()=>{setB(+$('re').value);$('edv').currentTime=+$('re').value};
-$('hs').onclick=()=>setA($('edv').currentTime);$('he').onclick=()=>setB($('edv').currentTime);
-$('pl').onclick=()=>{$('edv').currentTime=+$('rs').value;sw=true;$('edv').play()};
-$('edv').ontimeupdate=()=>{const v=$('edv');$('ph').style.left=px(v.currentTime)+'px';if(sw&&v.currentTime>=+$('re').value){v.pause();sw=false}};
-$('edv').onpause=()=>{sw=false};
-function closeEd(){$('edv').pause();$('ed').hidden=true;$('edv').removeAttribute('src')}
-$('edc').onclick=closeEd;document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('ed').hidden)closeEd()});
-$('edx').onclick=async()=>{$('edx').disabled=true;$('edmsg').textContent='Exporting...';
- const r=await fetch('/trim/'+E.id,{method:'POST',headers:H,body:JSON.stringify({file:E.f,start:+$('rs').value,end:+$('re').value})});
- const d=await r.json();$('edx').disabled=false;if(!r.ok){$('edmsg').textContent=d.error;return}
- const a=document.createElement('a');a.href='/files/'+E.id+'/'+d.file+'?t='+Date.now();a.download=d.file;document.body.append(a);a.click();a.remove();
- $('edmsg').textContent='Saved as '+d.file+' in your jobs folder, and downloading now.';$('edv').src=a.href;};
+const SUG=['Loudest moments','Biggest donations','Most replayed','Trending'];let si=0;
+SUG.forEach(n=>{const b=document.createElement('button');b.textContent=n;b.onclick=()=>{$('focus').value=n};$('sug').append(b)});
+setInterval(()=>{si=(si+1)%SUG.length;$('focus').placeholder=SUG[si]},2500);
 $('go').onclick=go;$('url').addEventListener('keydown',e=>{if(e.key==='Enter')go()});
 disk();hist();
 </script>"""

@@ -128,25 +128,64 @@ def fit_length(clip, heatmap, total):
     return {**clip, "start": start, "end": end}
 
 
-def pick_local(segments, heatmap, count, win=MIN_LEN):
-    """No API key needed: replay heatmap plus simple transcript energy signals."""
+DONATE = ("donat", "gifted", "gift", "subscri", "tip", "thank you", "thanks for", "dollar",
+          "bits", "cheer", "raid", "$")
+
+
+def loudness(path):
+    """Loudness for each second of the video, scaled 0 to 1."""
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "8000",
+                          "-f", "s16le", "-"], capture_output=True).stdout
+    a = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+    n = len(a) // 8000
+    if n == 0:
+        return []
+    rms = np.sqrt((a[:n * 8000].reshape(n, 8000) ** 2).mean(axis=1))
+    return (rms / (rms.max() or 1)).tolist()
+
+
+def pick_local(segments, heatmap, count, win=MIN_LEN, focus="", src=None):
+    """No API key needed: replay heatmap, transcript energy, and optional focus signals."""
     if not segments:
         return []
     total = max(s["end"] for s in segments)
+    vlen = video_length(heatmap, segments)
+    f = (focus or "").lower()
+    wh, wt, wl, wd = 10, 1.0, 0, 0   # weights: heat, transcript, loudness, donations
+    if "replay" in f:
+        wh, wt = 16, 0.3
+    elif "trend" in f:
+        wh, wt = 12, 1.4
+    elif "loud" in f:
+        wh, wt, wl = 3, 0.5, 14
+    elif "donat" in f or "gift" in f or "sub" in f:
+        wh, wt, wd = 4, 0.5, 2.0
+    lo = loudness(src) if wl and src else []
+    if not lo:
+        wl = 0
 
-    def heat_at(a, b):
-        v = [h["value"] for h in heatmap if h["end_time"] > a and h["start_time"] < b]
-        return max(v) if v else 0
+    def words(a, b):
+        return " ".join(s["text"] for s in segments if s["end"] > a and s["start"] < b).lower()
 
     def text_score(a, b):
-        txt = " ".join(s["text"] for s in segments if s["end"] > a and s["start"] < b).lower()
+        txt = words(a, b)
         return (len(txt.split()) / (b - a) + txt.count("!") * 0.5 + txt.count("?") * 0.2
                 + sum(txt.count(w) for w in HYPE) * 0.7)
 
+    def score(a, b):
+        s = heat_mean(heatmap, a, b) * wh + text_score(a, b) * wt
+        if wl:
+            part = lo[int(a):int(b)]
+            s += (sum(part) / len(part) if part else 0) * wl
+        if wd:
+            txt = words(a, b)
+            s += sum(txt.count(w) for w in DONATE) * wd
+        return s
+
     win = min(win, max(total, 5))
     cands, t = [], 0.0
-    while t + win <= total + 0.01:
-        cands.append((heat_mean(heatmap, t, t + win) * 10 + text_score(t, t + win), t))
+    while t + win <= max(total, vlen) + 0.01:
+        cands.append((score(t, t + win), t))
         t += 5
     picked = []
     for sc, t in sorted(cands, key=lambda c: (-c[0], c[1])):
@@ -157,14 +196,13 @@ def pick_local(segments, heatmap, count, win=MIN_LEN):
                            "hook": first[:80], "score": min(10, max(1, round(sc)))})
         if len(picked) >= count:
             break
-    vlen = video_length(heatmap, segments)
     return [fit_length(p, heatmap, vlen) for p in picked]
 
 
-def pick_moments(segments, heatmap, title, count, focus):
+def pick_moments(segments, heatmap, title, count, focus, src=None):
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("No ANTHROPIC_API_KEY set: using the local picker.")
-        return pick_local(segments, heatmap, count)
+        return pick_local(segments, heatmap, count, focus=focus, src=src)
     peaks = sorted(heatmap, key=lambda h: -h["value"])[:20]
     heat = [[round(p["start_time"]), round(p["end_time"]), round(p["value"], 2)] for p in peaks]
     lines = "\n".join(f"[{s['start']}-{s['end']}] {s['text']}" for s in segments)[:300000]
@@ -280,7 +318,7 @@ def main():
     print(f"Transcribing... (heatmap: {'yes' if heat else 'not available'})")
     segs = transcribe(src, heat, a.count)
     print("Picking moments...")
-    clips = pick_moments(segs, heat, title, a.count, a.focus)
+    clips = pick_moments(segs, heat, title, a.count, a.focus, src)
     for i, c in enumerate(clips, 1):
         path = cut(src, c, i, a.out, segs, a.vertical, a.captions)
         print(f"{path}  [{c['start']:.0f}-{c['end']:.0f}s] score {c['score']}  {c['title']} | {c['hook']}")
