@@ -13,6 +13,7 @@ HOSTS = {"127.0.0.1:5000", "localhost:5000"}
 SITES = ("youtube.com", "youtu.be", "twitch.tv", "kick.com", "vimeo.com", "tiktok.com",
          "instagram.com", "x.com", "twitter.com", "facebook.com")
 LOCK = threading.Lock()
+DURS = {}
 
 
 def site_ok(url):
@@ -125,6 +126,11 @@ def jobs():
         size = {f: os.path.getsize(os.path.join(p, f)) for f in os.listdir(p)}
         for cl in clips:
             cl["mb"] = round(size.get(cl["file"], 0) / 1e6, 1)
+            if not cl.get("dur") and cl["file"] in size:
+                key = (p, cl["file"], size[cl["file"]])
+                if key not in DURS:
+                    DURS[key] = clipper.duration(os.path.join(p, cl["file"]))
+                cl["dur"], cl["in"], cl["out"] = DURS[key], 0, DURS[key]
         if clips:
             out.append({"id": d, "when": time.strftime("%d %b %H:%M", time.localtime(os.path.getmtime(p))),
                         "t": os.path.getmtime(p), "clips": clips, "mb": round(sum(size.values()) / 1e6, 1)})
@@ -217,7 +223,7 @@ input:focus{outline:2px solid var(--peri)}
 h2{font:400 28px "Bebas Neue",Oswald,"Bahnschrift Condensed",Impact,sans-serif;letter-spacing:3px;margin:30px 0 10px}
 .hist{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line);flex-wrap:wrap}
 @media(max-width:760px){.shell{grid-template-columns:1fr}.rail{flex-direction:row;justify-content:space-around;padding:12px;position:static}.st span{writing-mode:horizontal-tb;transform:none}.st:after{display:none}}
-.trimbtn{margin-right:12px}.trim{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}.trim[hidden]{display:none}
+.hgrid{flex-basis:100%;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-top:6px}.hgrid[hidden]{display:none}.trimbtn{margin-right:12px}.trim{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}.trim[hidden]{display:none}
 .trk{position:relative;height:40px;background:rgba(255,255,255,.1);border-radius:6px}
 .trk input{position:absolute;inset:0;width:100%;height:100%;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
 .trk input::-webkit-slider-runnable-track{background:none}.trk input::-moz-range-track{background:none}
@@ -285,14 +291,14 @@ function trimUI(c,id,v){
  window.addEventListener('resize',()=>{if(!tp.hidden)upd()});
  v.addEventListener('loadedmetadata',()=>{v.currentTime=c.in},{once:true});
  return tp}
-function card(c,id){const u='/files/'+id+'/'+c.file,el=document.createElement('div');el.className='card';
+function card(c,id,target){const u='/files/'+id+'/'+c.file,el=document.createElement('div');el.className='card';
 const v=document.createElement('video');v.src=u;v.controls=true;v.preload='metadata';
 const h=document.createElement('h3');h.textContent=c.title;
 const p=document.createElement('p');p.textContent=c.hook+(c.end?' ('+Math.round(c.end-c.start)+'s, score '+c.score+')':'')+(c.mb?'  |  '+c.mb+' MB':'');
 const a=document.createElement('a');a.href=u;a.download=c.file;a.textContent='Download full';el.append(v,h,p);
 if(c.dur){const t=document.createElement('button');t.className='btn sm alt trimbtn';t.textContent='Trim length \u25BE';el.append(t);const tp=trimUI(c,id,v);el.append(tp);
 t.onclick=()=>{tp.hidden=!tp.hidden;t.textContent='Trim length '+(tp.hidden?'\u25BE':'\u25B4');if(!tp.hidden)tp.upd()}}
-el.append(a);$('grid').append(el)}
+el.append(a);(target||$('grid')).append(el)}
 async function go(){
  const url=$('url').value.trim();if(!url){$('err').textContent='Paste a video link first';return}
  ['focus','count'].forEach(k=>store('c_'+k,$(k).value));['vertical','captions'].forEach(k=>store('c_'+k,$(k).checked?'1':'0'));
@@ -313,12 +319,12 @@ async function hist(){
  $('tot').textContent='Total '+L.reduce((s,j)=>s+j.mb,0).toFixed(1)+' MB';
  $('hist').innerHTML='';L.forEach(j=>{const r=document.createElement('div');r.className='hist';
  const t=document.createElement('span');t.textContent=j.when+'  -  '+j.clips.length+' clips  -  '+j.mb+' MB';r.append(t);
- const b=document.createElement('span');
- [['View',()=>{$('grid').innerHTML='';j.clips.forEach(c=>card(c,j.id));$('grid').scrollIntoView({behavior:'smooth'})},'alt'],
+ const b=document.createElement('span'),box=document.createElement('div');box.className='hgrid';box.hidden=true;
+ [['Clips and trim \u25BE',e=>{box.hidden=!box.hidden;e.currentTarget.textContent='Clips and trim '+(box.hidden?'\u25BE':'\u25B4');if(!box.hidden&&!box.childElementCount)j.clips.forEach(c=>card(c,j.id,box))},'alt'],
   ['Open folder',()=>fetch('/open/'+j.id,{method:'POST',headers:H}),'alt'],
   ['Delete',async()=>{if(confirm('Delete these clips from your disk?')){await fetch('/delete/'+j.id,{method:'POST',headers:H});hist();disk()}},'']].forEach(([n,f,k])=>{
   const x=document.createElement('button');x.className='btn sm '+k;x.textContent=n;x.style.marginLeft='6px';x.onclick=f;b.append(x)});
- r.append(b);$('hist').append(r)})}
+ r.append(b);r.append(box);$('hist').append(r)})}
 const SUG=['Loudest moments','Biggest donations','Most replayed','Trending'];let si=0;
 SUG.forEach(n=>{const b=document.createElement('button');b.textContent=n;b.onclick=()=>{$('focus').value=n};$('sug').append(b)});
 setInterval(()=>{si=(si+1)%SUG.length;$('focus').placeholder=SUG[si]},2500);
